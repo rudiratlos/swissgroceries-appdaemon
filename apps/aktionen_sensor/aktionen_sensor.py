@@ -8,9 +8,23 @@ eingebaute Warteschlange (`_Queue` weiter unten): es läuft immer nur EIN Abruf.
     (benötigt Einkaufsliste >= v2.76.24-beta.11),
   * per Push gemeldet (optional).
 
+Kategorien (neu): jeder Treffer bekommt
+    category        = z. B. "wein"
+    parent_category = z. B. "getraenke"
+Die Kategorie wird über Produktfamilien (PRODUCT_FAMILIES) bestimmt, auch wenn das Wort
+im Angebot nicht vorkommt (Einkaufsliste "Wein" -> Angebot "Chasselas AOC" = wein/getraenke).
+Die Familien dienen zum Kategorisieren und als vorsichtiger Widerspruchs-Filter, das eigentliche
+Matching (Wortstamm, Komposita, Weinlogik) bleibt wie bisher.
+
 Sensoren (Beispiel chain=denner):
   sensor.einkaufsliste_denner_aktionen  -> Anzahl Aktionen, Attribut "promotions"
-  sensor.einkaufsliste_denner_treffer   -> Anzahl Treffer,  Attribute "artikel"/"details"
+  sensor.einkaufsliste_denner_treffer   -> Anzahl Treffer,  Attribute "artikel"/"details"/"kategorien"
+
+Optionale Argumente (neu):
+  send_category: true   -> category/parent_category an angebote_melden mitsenden. Lehnt der Service
+                           die Felder ab, wird einmal ohne sie gesendet und send_category abgeschaltet.
+  family_guard:  true   -> Treffer verwerfen, wenn Liste und Angebot eindeutig verschiedenen
+                           Produktfamilien angehören (z. B. "Tee" vs. "Eistee").
 
 Voraussetzung: der MCP-Container ist per HTTP erreichbar (POST {"chains": ["denner"]}).
 """
@@ -23,6 +37,7 @@ import unicodedata
 import urllib.request
 from collections import deque
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 import appdaemon.plugins.hass.hassapi as hass
 
@@ -128,6 +143,18 @@ STOPWORDS = {"frisch", "frische", "frischer", "bio", "mit", "und", "ohne", "gros
              "grosse", "klein", "kleine", "nur", "aber", "den", "der", "die", "das"}
 ATTR_DROP = {"imageUrl", "productId"}  # spart Platz in den Attributen
 
+
+def fold(text):
+    """Kleinschreibung, Akzente und Umlaute entfernen (ä->a, é->e, ó->o, ß->ss)."""
+    text = str(text).lower().replace("ß", "ss")
+    return "".join(c for c in unicodedata.normalize("NFKD", text)
+                   if not unicodedata.combining(c))
+
+
+def tokens(text):
+    return re.findall(r"[a-z]+", fold(text))
+
+
 # --- Weinerkennung (Begriffe ohne Umlaute/Akzente, kleingeschrieben) -------------
 WINE_WORDS = {"wein", "wine", "vin", "vino", "weine"}
 RED_WORDS = {"rotwein", "rouge", "rosso", "tinto"}
@@ -135,15 +162,18 @@ WHITE_WORDS = {"weisswein", "blanc", "bianco", "blanco"}
 ROSE_WORDS = {"rose", "rosato", "rosewein"}
 SPARKLING_WORDS = {"schaumwein", "sekt", "prosecco", "champagner", "champagne", "cremant",
                    "cava", "spumante", "frizzante", "brut"}
+# Schutzkennzeichen, die (fast) nur bei Wein vorkommen. Käse/Wurst/Olivenöl mit AOP/DOP/IGP/PDO/PGI
+# sind absichtlich NICHT dabei; AOC/DOC/... werden unten durch FOOD_WORDS wieder ausgeschlossen.
+WINE_DESIGNATIONS = {"aoc", "doc", "docg", "doca", "igt", "dac", "ava", "vdp"}
 # Eindeutige Hinweise auf Wein (IGP/AOP/DOP, Regionen und Marken sind absichtlich NICHT dabei,
-# sie stehen auch auf Käse, Wurst, Olivenöl ...). AOC/DOC/DOCG/IGT bleiben, mit Ausschluss unten.
-WINE_INDICATORS = {
-    "aoc", "doc", "docg", "doca", "igt", "vdp", "riserva", "reserva", "barrique", "cuvee",
+# sie stehen auch auf Käse, Wurst, Olivenöl ...).
+WINE_INDICATORS = WINE_DESIGNATIONS | {
+    "riserva", "reserva", "barrique", "cuvee",
     "merlot", "pinot", "chardonnay", "cabernet", "sauvignon", "syrah", "shiraz",
     "chasselas", "gamay", "riesling", "malbec", "tempranillo", "primitivo", "sangiovese",
     "nebbiolo", "montepulciano", "negroamaro", "grenache", "garnacha", "carmenere",
     "zinfandel", "gruner", "veltliner", "muller", "thurgau", "fendant",
-    "humagne", "arvine", "chianti", "barolo", "barbaresco", "valpolicella",
+    "humagne", "arvine", "cornalin", "chianti", "barolo", "barbaresco", "valpolicella",
     "amarone", "rioja", "ribera", "priorat", "bordeaux", "bourgogne", "beaujolais",
     "chablis", "medoc", "dezaley", "salvagnin", "spatburgunder", "blauburgunder",
     "pinotage", "dole",
@@ -163,21 +193,116 @@ RED_INDICATORS = {"merlot", "cabernet", "syrah", "shiraz", "gamay", "malbec", "t
                   "primitivo", "sangiovese", "nebbiolo", "montepulciano", "negroamaro",
                   "chianti", "barolo", "barbaresco", "valpolicella", "amarone", "rioja",
                   "salvagnin", "dole", "blauburgunder", "spatburgunder", "pinotage",
-                  "zinfandel", "carmenere", "grenache", "garnacha", "beaujolais"}
+                  "zinfandel", "carmenere", "grenache", "garnacha", "beaujolais", "cornalin"}
 WHITE_INDICATORS = {"chardonnay", "sauvignon", "chasselas", "riesling", "fendant",
                     "humagne", "arvine", "chablis", "muller", "thurgau", "veltliner",
                     "dezaley"}
 
 
-def fold(text):
-    """Kleinschreibung, Akzente und Umlaute entfernen (ä->a, é->e, ó->o, ß->ss)."""
-    text = str(text).lower().replace("ß", "ss")
-    return "".join(c for c in unicodedata.normalize("NFKD", text)
-                   if not unicodedata.combining(c))
+def is_wine_word(token):
+    """'Rotwein', 'Süsswein' ja, aber 'Schwein' nein."""
+    return token.endswith("wein") and not token.endswith("schwein")
 
 
-def tokens(text):
-    return re.findall(r"[a-z]+", fold(text))
+# --- Produktfamilien und Überkategorien (Idee aus Version 1) -----------------------
+# Zum Kategorisieren und als Widerspruchs-Filter, NICHT als Ersatz für das Matching.
+# Begriffe dürfen Umlaute/Akzente enthalten, sie werden beim Laden normalisiert.
+PRODUCT_FAMILIES = {
+    "wein": {
+        "wein", "weine", "wine", "vin", "vino", "rotwein", "weisswein", "rosewein",
+        "merlot", "pinot noir", "pinot nero", "pinot blanc", "pinot gris", "pinot grigio",
+        "spätburgunder", "blauburgunder", "chardonnay", "sauvignon blanc", "riesling",
+        "syrah", "shiraz", "gamay", "malbec", "tempranillo", "primitivo", "sangiovese",
+        "nebbiolo", "barbera", "grenache", "garnacha", "cabernet sauvignon", "zinfandel",
+        "pinotage", "chasselas", "fendant", "humagne", "petite arvine", "cornalin", "dôle",
+        "salvagnin", "chianti", "barolo", "barbaresco", "amarone", "valpolicella", "rioja",
+        "ribera del duero", "priorat", "bordeaux", "bourgogne", "beaujolais", "chablis",
+        "médoc", "dézaley", "champagner", "champagne", "prosecco", "crémant", "cava",
+        "spumante", "sekt", "schaumwein", "sparkling wine",
+    },
+    "bier": {"bier", "beer", "bière", "birra", "lager", "pils", "pilsner", "ale", "ipa",
+             "weizenbier", "weissbier", "stout", "porter", "bockbier"},
+    "wasser": {"wasser", "water", "eau", "acqua", "mineralwasser", "mineral water",
+               "tafelwasser", "sprudelwasser", "gazosa"},
+    "softdrinks": {"softdrink", "softdrinks", "limonade", "cola", "coca cola", "pepsi", "fanta",
+                   "sprite", "eistee", "ice tea", "iced tea", "sirup", "energy drink",
+                   "energydrink", "getränk", "getränke", "boisson", "bibita"},
+    "kaffee": {"kaffee", "coffee", "café", "caffè", "espresso", "cappuccino",
+               "latte macchiato"},
+    # "the" (frz. Tee) ist absichtlich nicht dabei: kollidiert mit dem englischen Artikel.
+    "tee": {"tee", "tea", "infusion", "kräutertee", "früchtetee", "schwarztee", "grüntee"},
+    "kaese": {"käse", "cheese", "fromage", "formaggio", "queso", "gruyère", "emmentaler",
+              "appenzeller", "sbrinz", "raclette", "vacherin", "tilsiter", "roquefort",
+              "comté", "brie", "camembert", "gorgonzola", "pecorino", "manchego",
+              "parmigiano", "reggiano", "grana padano", "mozzarella", "burrata", "feta",
+              "mascarpone", "ricotta"},
+    "olivenoel": {"olivenöl", "olive oil", "olio d'oliva", "olio di oliva", "huile d'olive",
+                  "aceite de oliva", "extra vergine", "extra virgin", "vierge extra"},
+    "fleisch": {"fleisch", "meat", "viande", "carne", "schinken", "jambon", "jamón",
+                "prosciutto", "speck", "salami", "wurst", "sausage", "bündnerfleisch",
+                "bresaola", "pancetta", "coppa", "mortadella"},
+    "essig": {"essig", "vinegar", "vinaigre", "aceto", "balsamico", "vinagre"},
+}
+
+PARENT_CATEGORIES = {
+    "wein": "getraenke", "bier": "getraenke", "wasser": "getraenke",
+    "softdrinks": "getraenke", "kaffee": "getraenke", "tee": "getraenke",
+    "kaese": "lebensmittel", "olivenoel": "lebensmittel", "fleisch": "lebensmittel",
+    "essig": "lebensmittel",
+}
+DEFAULT_PARENT = "lebensmittel"
+
+# Wenn einer dieser Begriffe vorkommt, ist die Familie NICHT die genannte (Käse mit AOC ist kein Wein).
+FAMILY_EXCLUSIONS = {
+    "wein": {"käse", "cheese", "fromage", "formaggio", "parmigiano", "gruyère", "emmentaler",
+             "prosciutto", "wurst", "schinken", "fleisch", "olivenöl", "olive oil", "essig",
+             "vinegar", "bier", "beer"},
+}
+
+
+def _normalize_terms(terms):
+    return {" ".join(tokens(t)) for t in terms if tokens(t)}
+
+
+FAMILY_TERMS = {fam: _normalize_terms(terms) for fam, terms in PRODUCT_FAMILIES.items()}
+FAMILY_EXCL_TERMS = {fam: _normalize_terms(terms) for fam, terms in FAMILY_EXCLUSIONS.items()}
+
+
+def _has_family_term(tok_list, phrase_text, term):
+    """Begriff im Text: Mehrwortbegriffe als Phrase, Einzelwörter exakt oder als Teil eines
+    Kompositums (Endung ab 4 Zeichen: Reibkäse; Anfang ab 6 Zeichen: Kaffeekapseln)."""
+    if " " in term:
+        return f" {term} " in phrase_text
+    for tok in tok_list:
+        if tok == term:
+            return True
+        if len(term) >= 4 and tok.endswith(term):
+            return True
+        if len(term) >= 6 and tok.startswith(term):
+            return True
+    return False
+
+
+@lru_cache(maxsize=8192)
+def classify_family(text):
+    """Produktfamilie eines Textes oder None (auch bei mehrdeutigen Treffern)."""
+    tok_list = tokens(text)
+    if not tok_list:
+        return None
+    phrase_text = " " + " ".join(tok_list) + " "
+    matches = [fam for fam, terms in FAMILY_TERMS.items()
+               if any(_has_family_term(tok_list, phrase_text, t) for t in terms)]
+    if "wein" not in matches and any(is_wine_word(t) for t in tok_list):
+        matches.append("wein")
+    for fam in list(matches):
+        excl = FAMILY_EXCL_TERMS.get(fam, ())
+        if any(_has_family_term(tok_list, phrase_text, t) for t in excl):
+            matches.remove(fam)
+    return matches[0] if len(matches) == 1 else None
+
+
+def parent_of(category):
+    return PARENT_CATEGORIES.get(category, DEFAULT_PARENT) if category else None
 
 
 def iso_date(value):
@@ -276,6 +401,8 @@ class AktionenSensor(hass.Hass):
         self.send_url = bool(self.args.get("send_url", True))      # Link zum Produkt mitsenden
         self.url_field = self.args.get("url_field", "url")         # Feldname bei angebote_melden
         self.compound = bool(self.args.get("compound", True))  # Wortteile in Komposita finden
+        self.send_category = bool(self.args.get("send_category", True))  # Kategorien mitsenden
+        self.family_guard = bool(self.args.get("family_guard", True))    # Familien-Widerspruch
 
         self.promos = []      # alle Aktionen (flach), für den Abgleich
         self.meta = None
@@ -452,6 +579,10 @@ class AktionenSensor(hass.Hass):
                 return value
         return ""
 
+    @classmethod
+    def _promo_text(cls, promo):
+        return f"{cls._title(promo)} {promo.get('description') or ''}"
+
     @staticmethod
     def _core(raw):
         """'1 Sack Äpfel · Aber nur Pink Lady' -> 'Äpfel'."""
@@ -463,15 +594,14 @@ class AktionenSensor(hass.Hass):
         kinds = set(wanted_tokens)
         is_wine = bool(kinds & (WINE_WORDS | RED_WORDS | WHITE_WORDS | ROSE_WORDS
                                 | SPARKLING_WORDS)) or any(
-            t.endswith("wein") for t in wanted_tokens)
+            is_wine_word(t) for t in wanted_tokens)
         if not is_wine:
             return None  # kein Wein-Artikel
-        text = f"{self._title(promo)} {promo.get('description', '')}"
-        tok = set(tokens(text))
+        tok = set(tokens(self._promo_text(promo)))
         if any(t.endswith(f) for t in tok for f in FOOD_WORDS):
             return False   # Käse, Wurst, Olivenöl ... mit AOC/Riserva ist kein Wein
         wine_hit = bool(tok & (WINE_INDICATORS | WINE_WORDS)) or any(
-            t.endswith("wein") for t in tok)
+            is_wine_word(t) for t in tok)
         sparkling = bool(tok & SPARKLING_WORDS)
         red = bool(tok & (RED_WORDS | RED_INDICATORS))
         white = bool(tok & (WHITE_WORDS | WHITE_INDICATORS))
@@ -502,6 +632,14 @@ class AktionenSensor(hass.Hass):
             return True
         if self.match_mode == "contains":
             return False
+        # Familien-Filter: Liste und Angebot eindeutig in verschiedenen Familien (Tee vs. Eistee,
+        # Wein vs. Weinessig) -> kein Treffer. Unbekannte Familien lassen das Matching unberührt.
+        if self.family_guard:
+            wanted_family = classify_family(wanted)
+            if wanted_family:
+                promo_family = classify_family(self._promo_text(promo))
+                if promo_family and promo_family != wanted_family:
+                    return False
         title_tokens = tokens(title)
         for word in wanted_tokens:
             if word in STOPWORDS:
@@ -529,6 +667,17 @@ class AktionenSensor(hass.Hass):
                                 and not (st == "lauch" and t.endswith(("knoblauch", "barlauch")))):
                             return True
         return False
+
+    def _categorize(self, wanted, promo):
+        """(category, parent_category) für einen Treffer.
+
+        Reihenfolge: Weinlogik, Familie des Listeneintrags, Familie des Angebots.
+        Beispiel: Liste 'Wein', Angebot 'Chasselas AOC' -> ('wein', 'getraenke')."""
+        if self._wine_match(tokens(wanted), promo):
+            category = "wein"
+        else:
+            category = classify_family(wanted) or classify_family(self._promo_text(promo))
+        return category, parent_of(category)
 
     def _open_items(self):
         raw = self.get_state(self.list_entity, attribute="artikel")
@@ -617,9 +766,15 @@ class AktionenSensor(hass.Hass):
             if hit and raw not in seen:
                 seen.add(raw)
                 now, reg, cur = self._prices(hit)
-                treffer.append({"artikel": raw, "suche": core, "aktion": self._title(hit),
-                                "preis": now, "normalpreis": reg,
-                                **{k: v for k, v in hit.items() if k not in ATTR_DROP}})
+                category, parent = self._categorize(core, hit)
+                entry = {k: v for k, v in hit.items() if k not in ATTR_DROP}
+                if "category" in entry:                  # eigene Kategorie des MCP-Servers retten
+                    entry["source_category"] = entry.pop("category")
+                entry.pop("parent_category", None)
+                entry.update({"artikel": raw, "suche": core, "aktion": self._title(hit),
+                              "preis": now, "normalpreis": reg,
+                              "category": category, "parent_category": parent})
+                treffer.append(entry)
 
         shown = [{k: v for k, v in p.items() if k not in ATTR_DROP}
                  for p in active[: self.max_items]]
@@ -639,6 +794,9 @@ class AktionenSensor(hass.Hass):
             "icon": "mdi:cart-percent",
             "unit_of_measurement": "Treffer",
             "artikel": [t["artikel"] for t in treffer],
+            "kategorien": {t["artikel"]: {"category": t["category"],
+                                          "parent_category": t["parent_category"]}
+                           for t in treffer},
             "details": treffer,
         })
         names = sorted(t["artikel"] for t in treffer)
@@ -649,6 +807,14 @@ class AktionenSensor(hass.Hass):
         if self.report:
             self._report_offers(treffer)
         self._notify(treffer)
+
+    @staticmethod
+    def _strip_categories(offers):
+        return [{k: v for k, v in o.items() if k not in ("category", "parent_category")}
+                for o in offers]
+
+    def _send_offers(self, offers):
+        self.call_service("einkaufsliste/angebote_melden", source=self.source, offers=offers)
 
     def _report_offers(self, treffer):
         """Treffer an die Einkaufsliste melden (einkaufsliste.angebote_melden)."""
@@ -674,6 +840,9 @@ class AktionenSensor(hass.Hass):
                 "description": self._describe(t),
                 "currency": cur or self.currency,
             }
+            if self.send_category:
+                offer["category"] = t.get("category")
+                offer["parent_category"] = t.get("parent_category")
             if self.send_url and t.get("productUrl"):
                 offer[self.url_field] = t["productUrl"]
             offers.append({k: v for k, v in offer.items() if v not in (None, "")})
@@ -685,14 +854,29 @@ class AktionenSensor(hass.Hass):
         if sig == self._sent_sig and time.time() - self._sent_at < 3600:
             return
         try:
-            self.call_service("einkaufsliste/angebote_melden",
-                              source=self.source, offers=offers)
-            self._sent_sig, self._sent_at = sig, time.time()
-            self.log(f"{len(offers)} Angebot(e) an die Einkaufsliste gemeldet")
+            self._send_offers(offers)
         except Exception as exc:
-            self._retry_after = time.time() + 300   # nach Fehler 5 Minuten Pause
-            self.log(f"{self.chain}: einkaufsliste.angebote_melden fehlgeschlagen: {exc} "
-                     f"| gesendet: {sig[:600]}", level="ERROR")
+            stripped = self._strip_categories(offers)
+            if stripped == offers:                       # keine Kategorien im Spiel: echter Fehler
+                self._report_failed(exc, sig)
+                return
+            try:                                         # evtl. kennt der Service die Felder nicht
+                self._send_offers(stripped)
+            except Exception as exc2:
+                self._report_failed(exc2, sig)
+                return
+            self.send_category = False
+            offers = stripped
+            sig = json.dumps(offers, sort_keys=True, ensure_ascii=False)
+            self.log(f"{self.chain}: angebote_melden lehnt category/parent_category ab ({exc}) "
+                     f"- Kategorien werden nicht mehr mitgesendet.", level="WARNING")
+        self._sent_sig, self._sent_at = sig, time.time()
+        self.log(f"{len(offers)} Angebot(e) an die Einkaufsliste gemeldet")
+
+    def _report_failed(self, exc, sig):
+        self._retry_after = time.time() + 300   # nach Fehler 5 Minuten Pause
+        self.log(f"{self.chain}: einkaufsliste.angebote_melden fehlgeschlagen: {exc} "
+                 f"| gesendet: {sig[:600]}", level="ERROR")
 
     def _notify(self, treffer):
         current = {t["artikel"].lower() for t in treffer}

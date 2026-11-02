@@ -98,6 +98,7 @@ Swissgroceries MCP: Updates über den Home Assistant Add-on-Store installieren.
 Nach einem Update gegebenenfalls AppDaemon neu starten.
 
 Repository: https://github.com/rudiratlos/swissgroceries-appdaemon
+
 Release Notes: https://github.com/rudiratlos/swissgroceries-appdaemon/releases
 
 ## Rechtliches
