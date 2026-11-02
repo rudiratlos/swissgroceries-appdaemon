@@ -87,12 +87,18 @@ Wurst und Olivenöl mit IGP/AOP zählen nicht als Wein. Pro Kette und Artikel wi
 
 Logs: `ha apps logs <slug>` (Add-on) und `ha apps logs a0d7b954_appdaemon` (AppDaemon).
 
-## Entwicklung
 
-Tests: `pip install pytest && python3 -m pytest`. Die Version steht in `swissgroceries_mcp/config.yaml` (Home Assistant
-erkennt Add-on-Updates daran). Neue Version: dort erhöhen, committen, Tag `vX.Y.Z` setzen und pushen, dann auf GitHub unter
-*Releases* ein Release zum Tag erstellen. **HACS zeigt Versionen nur für Releases an, Tags allein genügen nicht.**
-Das Paket swissgroceries-mcp wird im `swissgroceries_mcp/Dockerfile` festgelegt (`ARG MCP_VERSION`).
+## Updates
+
+Updates werden über GitHub Releases bereitgestellt.
+
+AppDaemon-App: Updates über HACS installieren.
+Swissgroceries MCP: Updates über den Home Assistant Add-on-Store installieren.
+
+Nach einem Update gegebenenfalls AppDaemon neu starten.
+
+Repository: https://github.com/rudiratlos/swissgroceries-appdaemon
+Release Notes: https://github.com/rudiratlos/swissgroceries-appdaemon/releases
 
 ## Rechtliches
 
