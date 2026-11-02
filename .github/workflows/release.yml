@@ -1,37 +1,20 @@
-steps:
-  - name: Checkout
-    uses: actions/checkout@v6
+name: Release
 
-  - name: Determine release tag
-    id: release
-    shell: bash
-    env:
-      INPUT_TAG: ${{ inputs.tag }}
-    run: |
-      if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-        TAG="$INPUT_TAG"
-      else
-        TAG="${GITHUB_REF_NAME}"
-      fi
+on:
+  push:
+    tags: ["v*"]
 
-      if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "Invalid release tag: $TAG"
-        exit 1
-      fi
+permissions:
+  contents: write
 
-      echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+jobs:
+  release:
+    runs-on: ubuntu-latest
 
-  - name: Verify tag exists
-    env:
-      TAG: ${{ steps.release.outputs.tag }}
-    run: |
-      git fetch --tags
-      git rev-parse --verify "refs/tags/$TAG"
+    steps:
+      - uses: actions/checkout@v4
 
-  - name: Create GitHub Release
-    uses: softprops/action-gh-release@v3
-    with:
-      tag_name: ${{ steps.release.outputs.tag }}
-      name: Swissgroceries ${{ steps.release.outputs.tag }}
-      generate_release_notes: true
-      make_latest: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
