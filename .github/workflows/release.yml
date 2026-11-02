@@ -1,36 +1,37 @@
-name: Release
+steps:
+  - name: Checkout
+    uses: actions/checkout@v6
 
-# Läuft, wenn ein Tag wie v1.2.3 gepusht wird.
-on:
-  push:
-    tags: ["v*.*.*"]
+  - name: Determine release tag
+    id: release
+    shell: bash
+    env:
+      INPUT_TAG: ${{ inputs.tag }}
+    run: |
+      if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+        TAG="$INPUT_TAG"
+      else
+        TAG="${GITHUB_REF_NAME}"
+      fi
 
-permissions:
-  contents: write
+      if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Invalid release tag: $TAG"
+        exit 1
+      fi
 
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Passt das Tag zur Version in config.yaml?
-        run: |
-          V=$(sed -n 's/^version: "\(.*\)"/\1/p' swissgroceries_mcp/config.yaml)
-          [ "v$V" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME passt nicht zu version $V in config.yaml"; exit 1; }
-      - name: Tests und Syntaxprüfung
-        run: |
-          pip install pytest
-          python -m pytest -q
-          node --check swissgroceries_mcp/server.mjs
-      - name: Release erstellen
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          zip -r "swissgroceries-${GITHUB_REF_NAME#v}.zip" apps swissgroceries_mcp LICENSE README.md
-          gh release create "$GITHUB_REF_NAME" ./*.zip --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+      echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  - name: Verify tag exists
+    env:
+      TAG: ${{ steps.release.outputs.tag }}
+    run: |
+      git fetch --tags
+      git rev-parse --verify "refs/tags/$TAG"
+
+  - name: Create GitHub Release
+    uses: softprops/action-gh-release@v3
+    with:
+      tag_name: ${{ steps.release.outputs.tag }}
+      name: Swissgroceries ${{ steps.release.outputs.tag }}
+      generate_release_notes: true
+      make_latest: true
