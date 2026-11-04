@@ -78,48 +78,6 @@ Weitere (`store_name`, `source`, `currency`, `list_entity`, `all_entity`, `entit
 Einzahl/Mehrzahl und `Bio` werden berücksichtigt. Wein wird an AOC, DOC(G), IGT, Riserva und Rebsorten erkannt; Käse,
 Wurst und Olivenöl mit IGP/AOP zählen nicht als Wein. Pro Kette und Artikel wird das erste passende Angebot gemeldet.
 
-### Geofencing-Konfiguration
-
-Die Geofencing-App wird über folgenden Eintrag in `apps.yaml` konfiguriert:
-
-    einkaufsliste_geofence:
-      module: einkaufsliste_geofence.einkaufsliste_geofence
-      class: EinkaufslisteGeofence
-      # Standardradius in Metern
-      radius: 35
-      # Aktualisierung alle 30 Sekunden
-      update_interval: 30
-      # Optional: nur bestimmte Smartphones
-      # trackers:
-      #   - device_tracker.iphone
-      #   - device_tracker.android
-      # Optional: individueller Radius pro Filiale
-      # radius_<geschaeft>_<plz>: 50
-
-**Konfigurationsparameter:**
-
-| Parameter | Beschreibung |
-|---|---|
-| `radius` | Standardradius des Geofence in Metern |
-| `update_interval` | Aktualisierungsintervall in Sekunden |
-| `trackers` | Optionale Liste der zu überwachenden Smartphone-Tracker |
-| `radius_<geschaeft>_<plz>` | Individueller Geofence-Radius pro Filiale in Metern |
-
-### Erzeugte Binary-Sensoren
-
-Für jede erkannte Filiale wird ein eigener Binary-Sensor in Home Assistant angelegt.
-
-**Entity-ID:**
-
-    binary_sensor.einkaufsliste_bei_<geschaeft>_<plz>
-
-**Zustände:**
-
-- `on`: Mindestens ein überwachtes Smartphone befindet sich innerhalb des Geofence.
-- `off`: Kein überwachtes Smartphone befindet sich innerhalb des Geofence.
-
-Die Sensoren enthalten zusätzliche Attribute mit Filial- und Standortinformationen sowie den ermittelten Entfernungen.
-
 
 ## Fehlersuche
 

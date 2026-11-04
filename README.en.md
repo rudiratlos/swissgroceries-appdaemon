@@ -78,49 +78,6 @@ and the `Bio` prefix are handled. Wine is recognised by AOC, DOC(G), IGT, Riserv
 and olive oil with IGP/AOP do not count as wine. Per chain and item, the first matching offer is reported.
 
 
-### Geofencing Configuration
-
-The geofencing app is configured in `apps.yaml` as follows:
-
-    einkaufsliste_geofence:
-      module: einkaufsliste_geofence.einkaufsliste_geofence
-      class: EinkaufslisteGeofence
-      # Default radius in meters
-      radius: 35
-      # Update every 30 seconds
-      update_interval: 30
-      # Optional: monitor specific smartphones only
-      # trackers:
-      #   - device_tracker.iphone
-      #   - device_tracker.android
-      # Optional: individual radius per store
-      # radius_<store>_<zip>: 50
-
-**Configuration parameters:**
-
-| Parameter | Description |
-|---|---|
-| `radius` | Default geofence radius in meters |
-| `update_interval` | Update interval in seconds |
-| `trackers` | Optional list of smartphone trackers to monitor |
-| `radius_<store>_<zip>` | Individual geofence radius per store in meters |
-
-### Generated Binary Sensors
-
-A separate binary sensor is created in Home Assistant for each detected store.
-
-**Entity ID:**
-
-    binary_sensor.einkaufsliste_bei_<store>_<zip>
-
-**States:**
-
-- `on`: At least one monitored smartphone is within the geofence.
-- `off`: No monitored smartphone is within the geofence.
-
-The sensors include additional attributes containing store and location information as well as calculated distances.
-
-
 ## Troubleshooting
 
 | Observation | Fix |
