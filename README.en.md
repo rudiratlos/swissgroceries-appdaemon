@@ -32,11 +32,13 @@ denner_aktionen:
   module: aktionen_sensor
   class: AktionenSensor
   chain: denner          # denner | coop | migros | aldi | lidl | farmy | volgshop | ottos
+  notify_service: null
 
 coop_aktionen:
   module: aktionen_sensor
   class: AktionenSensor
   chain: coop
+  notify_service: null
 ```
 
 The app finds the add-on by itself, no address has to be entered. The AppDaemon log shows `... Aktionen geladen`

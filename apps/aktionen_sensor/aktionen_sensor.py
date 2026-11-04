@@ -8,23 +8,30 @@ eingebaute Warteschlange (`_Queue` weiter unten): es läuft immer nur EIN Abruf.
     (benötigt Einkaufsliste >= v2.76.24-beta.11),
   * per Push gemeldet (optional).
 
-Kategorien (neu): jeder Treffer bekommt
+Kategorien: jeder Treffer bekommt
     category        = z. B. "wein"
     parent_category = z. B. "getraenke"
 Die Kategorie wird über Produktfamilien (PRODUCT_FAMILIES) bestimmt, auch wenn das Wort
 im Angebot nicht vorkommt (Einkaufsliste "Wein" -> Angebot "Chasselas AOC" = wein/getraenke).
-Die Familien dienen zum Kategorisieren und als vorsichtiger Widerspruchs-Filter, das eigentliche
-Matching (Wortstamm, Komposita, Weinlogik) bleibt wie bisher.
+
+Plausibilitätsprüfungen (verhindern unsinnige Zuordnungen):
+  1. Kategorie der Einkaufsliste (z. B. "Haushalt") und Überkategorie des Angebots
+     (z. B. "getraenke") dürfen sich nicht widersprechen.
+  2. Produktfamilien dürfen sich nicht widersprechen (Tee vs. Eistee, Calgon vs. Fleisch).
+  3. Einheit: Getränke/Milch erwarten Volumen (Liter), Lebensmittel Gewicht (g/kg).
+     "Milch" (Liter) trifft daher keine "Milchschokolade" (Gramm).
 
 Sensoren (Beispiel chain=denner):
   sensor.einkaufsliste_denner_aktionen  -> Anzahl Aktionen, Attribut "promotions"
   sensor.einkaufsliste_denner_treffer   -> Anzahl Treffer,  Attribute "artikel"/"details"/"kategorien"
 
-Optionale Argumente (neu):
+Optionale Argumente:
   send_category: true   -> category/parent_category an angebote_melden mitsenden. Lehnt der Service
                            die Felder ab, wird einmal ohne sie gesendet und send_category abgeschaltet.
-  family_guard:  true   -> Treffer verwerfen, wenn Liste und Angebot eindeutig verschiedenen
-                           Produktfamilien angehören (z. B. "Tee" vs. "Eistee").
+  family_guard:  true   -> Treffer verwerfen, wenn Kategorie/Familie/Einheit nicht zusammenpassen.
+  plz / ort:            -> Standort fuer die ortsbasierte Suche. Ohne Angabe werden die Attribute
+                           "plz" und "ort" des Sensors sensor.einkaufsliste_<chain> verwendet.
+  zip_arg / city_arg:   -> Parameternamen im MCP-Aufruf (Standard "zip" und "city").
 
 Voraussetzung: der MCP-Container ist per HTTP erreichbar (POST {"chains": ["denner"]}).
 """
@@ -139,8 +146,11 @@ QTY_RE = re.compile(
     r"dosen?|bund|becher|gläser|glas|kisten?|beutel|schalen?|netz)\b\.?)?\s*",
     re.IGNORECASE,
 )
+# Füllwörter ohne Aussagekraft ("fur" = "für" nach fold(); "Calgon für Waschmaschine" darf nicht
+# auf "Gewürzmischung für Fleisch" passen)
 STOPWORDS = {"frisch", "frische", "frischer", "bio", "mit", "und", "ohne", "gross",
-             "grosse", "klein", "kleine", "nur", "aber", "den", "der", "die", "das"}
+             "grosse", "klein", "kleine", "nur", "aber", "den", "der", "die", "das",
+             "fur", "fuer", "von", "vom", "zum", "zur", "aus", "auf", "bei", "fr"}
 ATTR_DROP = {"imageUrl", "productId"}  # spart Platz in den Attributen
 
 
@@ -204,7 +214,7 @@ def is_wine_word(token):
     return token.endswith("wein") and not token.endswith("schwein")
 
 
-# --- Produktfamilien und Überkategorien (Idee aus Version 1) -----------------------
+# --- Produktfamilien und Überkategorien --------------------------------------------
 # Zum Kategorisieren und als Widerspruchs-Filter, NICHT als Ersatz für das Matching.
 # Begriffe dürfen Umlaute/Akzente enthalten, sie werden beim Laden normalisiert.
 PRODUCT_FAMILIES = {
@@ -231,6 +241,7 @@ PRODUCT_FAMILIES = {
                "latte macchiato"},
     # "the" (frz. Tee) ist absichtlich nicht dabei: kollidiert mit dem englischen Artikel.
     "tee": {"tee", "tea", "infusion", "kräutertee", "früchtetee", "schwarztee", "grüntee"},
+    "milch": {"milch", "vollmilch", "lait"},
     "kaese": {"käse", "cheese", "fromage", "formaggio", "queso", "gruyère", "emmentaler",
               "appenzeller", "sbrinz", "raclette", "vacherin", "tilsiter", "roquefort",
               "comté", "brie", "camembert", "gorgonzola", "pecorino", "manchego",
@@ -242,22 +253,44 @@ PRODUCT_FAMILIES = {
                 "prosciutto", "speck", "salami", "wurst", "sausage", "bündnerfleisch",
                 "bresaola", "pancetta", "coppa", "mortadella"},
     "essig": {"essig", "vinegar", "vinaigre", "aceto", "balsamico", "vinagre"},
+    # Haushalt: Waschen, Putzen, destilliertes Wasser (Bügeleisen/Akku), Papierwaren
+    "haushalt": {"calgon", "waschmittel", "waschpulver", "weichspüler", "entkalker",
+                 "spülmittel", "geschirrspüler", "reiniger", "putzmittel",
+                 "destilliert", "destilliertes wasser", "demineralisiert", "bügelwasser"},
+    "wc_papier": {"wc papier", "toilettenpapier", "hygienepapier"},
+    "haushaltspapier": {"haushaltspapier", "küchenpapier", "küchenrolle", "haushaltsrolle"},
 }
 
 PARENT_CATEGORIES = {
     "wein": "getraenke", "bier": "getraenke", "wasser": "getraenke",
     "softdrinks": "getraenke", "kaffee": "getraenke", "tee": "getraenke",
+    "milch": "lebensmittel",
     "kaese": "lebensmittel", "olivenoel": "lebensmittel", "fleisch": "lebensmittel",
     "essig": "lebensmittel",
+    "haushalt": "haushalt", "wc_papier": "haushalt", "haushaltspapier": "haushalt",
 }
 DEFAULT_PARENT = "lebensmittel"
 
-# Wenn einer dieser Begriffe vorkommt, ist die Familie NICHT die genannte (Käse mit AOC ist kein Wein).
+# Wenn einer dieser Begriffe vorkommt, ist die Familie NICHT die genannte (Käse mit AOC ist kein Wein,
+# destilliertes Wasser ist kein Trinkwasser).
 FAMILY_EXCLUSIONS = {
     "wein": {"käse", "cheese", "fromage", "formaggio", "parmigiano", "gruyère", "emmentaler",
              "prosciutto", "wurst", "schinken", "fleisch", "olivenöl", "olive oil", "essig",
              "vinegar", "bier", "beer"},
+    "wasser": {"destilliert", "destilliertes", "demineralisiert", "entkalker"},
 }
+
+# Kategorien der Einkaufsliste (Feld "kategorie") -> Überkategorie. Schlüssel ohne Akzente,
+# Teilstring-Vergleich ("Kühlregal & Milch" -> "kuhlregal").
+LIST_CATEGORY_PARENTS = (
+    ("haushalt", "haushalt"), ("baumarkt", "baumarkt"), ("getrank", "getraenke"),
+    ("kuhlregal", "lebensmittel"), ("milch", "lebensmittel"), ("obst", "lebensmittel"),
+    ("gemuse", "lebensmittel"), ("fleisch", "lebensmittel"), ("brot", "lebensmittel"),
+    ("tiefkuhl", "lebensmittel"), ("vorrat", "lebensmittel"), ("snack", "lebensmittel"),
+)
+
+# Familien, die trotz Überkategorie "lebensmittel" in Litern verkauft werden
+VOLUME_FAMILIES = {"milch", "olivenoel", "essig"}
 
 
 def _normalize_terms(terms):
@@ -303,6 +336,36 @@ def classify_family(text):
 
 def parent_of(category):
     return PARENT_CATEGORIES.get(category, DEFAULT_PARENT) if category else None
+
+
+def list_parent(kategorie):
+    """Überkategorie aus der Kategorie des Einkaufslisten-Eintrags ('Haushalt' -> 'haushalt')."""
+    key = fold(kategorie or "")
+    return next((p for needle, p in LIST_CATEGORY_PARENTS if needle in key), None)
+
+
+# --- Einheiten: Volumen (Liter) gegen Gewicht (Gramm) -------------------------------
+MEASURE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(kg|gr|g|lt|liter|litre|dl|cl|ml|l)\b",
+                        re.IGNORECASE)
+VOLUME_UNITS = {"l", "lt", "liter", "litre", "dl", "cl", "ml"}
+WEIGHT_UNITS = {"g", "gr", "kg"}
+
+
+def measure_kind(text):
+    """'volume', 'weight' oder None (keine oder gemischte Angabe)."""
+    kinds = {"volume" if unit.lower() in VOLUME_UNITS else "weight"
+             for _, unit in MEASURE_RE.findall(str(text))}
+    return kinds.pop() if len(kinds) == 1 else None
+
+
+def promo_kind(promo):
+    """Einheit des Angebots: erst strukturierte Felder, dann Titel + Beschreibung."""
+    unit = str(promo.get("size_unit") or "").lower()
+    if unit in VOLUME_UNITS:
+        return "volume"
+    if unit in WEIGHT_UNITS:
+        return "weight"
+    return measure_kind(f"{promo.get('productName') or ''} {promo.get('description') or ''}")
 
 
 def iso_date(value):
@@ -402,7 +465,9 @@ class AktionenSensor(hass.Hass):
         self.url_field = self.args.get("url_field", "url")         # Feldname bei angebote_melden
         self.compound = bool(self.args.get("compound", True))  # Wortteile in Komposita finden
         self.send_category = bool(self.args.get("send_category", True))  # Kategorien mitsenden
-        self.family_guard = bool(self.args.get("family_guard", True))    # Familien-Widerspruch
+        self.family_guard = bool(self.args.get("family_guard", True))    # Kategorie-/Einheiten-Filter
+        self.zip_arg = self.args.get("zip_arg", "zip")             # Parametername PLZ im MCP
+        self.city_arg = self.args.get("city_arg", "city")          # Parametername Ort im MCP
 
         self.promos = []      # alle Aktionen (flach), für den Abgleich
         self.meta = None
@@ -416,8 +481,9 @@ class AktionenSensor(hass.Hass):
         self._load_cache()
         self._retry_handle = None
         self._queued_at = 0.0
+        plz, ort = self._location()
         self.log(f"{self.chain}: MCP-Server {self.mcp_url} (gemeinsame Warteschlange, "
-                 f"Pause {self.mcp_gap:g} s)")
+                 f"Pause {self.mcp_gap:g} s), Standort {plz or '-'} {ort or ''}".rstrip())
 
         now = datetime.now()
         if self.promos:
@@ -441,12 +507,30 @@ class AktionenSensor(hass.Hass):
                 pass
         self._debounce = self.run_in(self.publish, 3)
 
+    # --------------------------------------------------------------- Standort
+    def _location(self):
+        """(PLZ, Ort): erst App-Argumente, dann Attribute des Geschäfts-Sensors."""
+        plz = self.args.get("plz")
+        ort = self.args.get("ort")
+        try:
+            if not plz:
+                plz = self.get_state(self.store_entity, attribute="plz")
+            if not ort:
+                ort = self.get_state(self.store_entity, attribute="ort")
+        except Exception:
+            pass
+        plz = str(plz).strip() if plz not in (None, "", "unknown", "unavailable") else None
+        ort = str(ort).strip() if ort not in (None, "", "unknown", "unavailable") else None
+        return plz, ort
+
     # ------------------------------------------------------------------ Cache
     def _cache_path(self):
         base = self.args.get("cache_dir", "/homeassistant/appdaemon/cache")
         if not os.path.isdir(base):
             base = getattr(self, "config_dir", None) or "/config"
-        return os.path.join(base, f"aktionen_{self.chain}.json")
+        plz, _ = self._location()
+        suffix = f"_{plz}" if plz else ""
+        return os.path.join(base, f"aktionen_{self.chain}{suffix}.json")
 
     def _load_cache(self):
         try:
@@ -483,6 +567,11 @@ class AktionenSensor(hass.Hass):
         args = {"chains": [self.chain]}
         if self.query:
             args["query"] = self.query
+        plz, ort = self._location()
+        if plz:
+            args[self.zip_arg] = plz
+        if ort:
+            args[self.city_arg] = ort
         request = urllib.request.Request(
             self.mcp_url,
             data=json.dumps(args).encode("utf-8"),
@@ -622,7 +711,44 @@ class AktionenSensor(hass.Hass):
             return wine_hit and white and not sparkling
         return wine_hit or sparkling  # allgemein "Wein"
 
-    def _matches(self, wanted, promo):
+    def _expected_kind(self, raw, core, list_category, menge=None):
+        """Erwartete Einheit des Listeneintrags.
+
+        Getränke und Milch/Öl/Essig -> 'volume' (Liter), Lebensmittel -> 'weight' (g/kg),
+        sonst None (z. B. Haushalt, Baumarkt: Flüssigkeiten und Feststoffe gemischt).
+        Eine explizite Angabe im Eintrag ('1 l Milch', Menge '500 g') hat Vorrang."""
+        explicit = measure_kind(f"{raw} {menge or ''}")
+        if explicit:
+            return explicit
+        family = classify_family(core)
+        parent = list_parent(list_category) or (parent_of(family) if family else None)
+        if family in VOLUME_FAMILIES or parent == "getraenke":
+            return "volume"
+        if parent == "lebensmittel":
+            return "weight"
+        return None
+
+    def _category_ok(self, wanted, list_category, promo):
+        """Liste und Angebot dürfen sich bei eindeutiger Kategorie nicht widersprechen."""
+        if not self.family_guard:
+            return True
+        w_fam = classify_family(wanted)
+        p_fam = classify_family(self._promo_text(promo))
+        if w_fam and p_fam and w_fam != p_fam:
+            return False
+        w_parent = list_parent(list_category) or (parent_of(w_fam) if w_fam else None)
+        p_parent = parent_of(p_fam) if p_fam else None
+        return not (w_parent and p_parent and w_parent != p_parent)
+
+    def _matches(self, wanted, promo, list_category=None, expected=None):
+        # Einheit: Liter gegen Gramm kann nicht dasselbe Produkt sein (Milch vs. Milchschokolade)
+        if self.family_guard and expected:
+            found = promo_kind(promo)
+            if found and found != expected:
+                return False
+        # Kategorie/Familie: Haushalt vs. Lebensmittel, Tee vs. Eistee, Wasser vs. dest. Wasser
+        if not self._category_ok(wanted, list_category, promo):
+            return False
         title = self._title(promo)
         if self.match_mode == "contains" and fold(wanted) in fold(title):
             return True
@@ -632,14 +758,6 @@ class AktionenSensor(hass.Hass):
             return True
         if self.match_mode == "contains":
             return False
-        # Familien-Filter: Liste und Angebot eindeutig in verschiedenen Familien (Tee vs. Eistee,
-        # Wein vs. Weinessig) -> kein Treffer. Unbekannte Familien lassen das Matching unberührt.
-        if self.family_guard:
-            wanted_family = classify_family(wanted)
-            if wanted_family:
-                promo_family = classify_family(self._promo_text(promo))
-                if promo_family and promo_family != wanted_family:
-                    return False
         title_tokens = tokens(title)
         for word in wanted_tokens:
             if word in STOPWORDS:
@@ -680,20 +798,24 @@ class AktionenSensor(hass.Hass):
         return category, parent_of(category)
 
     def _open_items(self):
+        """Offene Artikel als Liste von (Name, Kategorie der Einkaufsliste, Menge)."""
         raw = self.get_state(self.list_entity, attribute="artikel")
         if not raw and self.list_entity != self.store_entity:
-            raw = self.get_state(self.store_entity, attribute="artikel")   # Fallback
+            raw = (self.get_state(self.store_entity, attribute="details")
+                   or self.get_state(self.store_entity, attribute="artikel"))   # Fallback
         if not raw:
             return []
         if isinstance(raw, str):
             raw = [part.strip() for part in raw.split(",") if part.strip()]
-        names = []
+        out = []
         for entry in raw:
+            category = menge = None
             if isinstance(entry, dict):
+                category, menge = entry.get("kategorie"), entry.get("menge")
                 entry = entry.get("name")
             if isinstance(entry, str) and entry.strip():
-                names.append(entry.strip())
-        return names
+                out.append((entry.strip(), category, menge))
+        return out
 
     # ---------------------------------------------------------------- Preise
     PRICE_NOW = ("price_current", "currentprice", "promoprice", "saleprice", "actionprice",
@@ -760,9 +882,10 @@ class AktionenSensor(hass.Hass):
         active = self.active
         treffer, seen = [], set()
         items = self._open_items()
-        for raw in items:
+        for raw, list_cat, menge in items:
             core = self._core(raw)
-            hit = next((p for p in active if self._matches(core, p)), None)
+            expected = self._expected_kind(raw, core, list_cat, menge)
+            hit = next((p for p in active if self._matches(core, p, list_cat, expected)), None)
             if hit and raw not in seen:
                 seen.add(raw)
                 now, reg, cur = self._prices(hit)
@@ -773,7 +896,8 @@ class AktionenSensor(hass.Hass):
                 entry.pop("parent_category", None)
                 entry.update({"artikel": raw, "suche": core, "aktion": self._title(hit),
                               "preis": now, "normalpreis": reg,
-                              "category": category, "parent_category": parent})
+                              "category": category, "parent_category": parent,
+                              "liste_kategorie": list_cat})
                 treffer.append(entry)
 
         shown = [{k: v for k, v in p.items() if k not in ATTR_DROP}
