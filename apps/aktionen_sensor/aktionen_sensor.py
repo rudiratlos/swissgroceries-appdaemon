@@ -904,6 +904,11 @@ class AktionenSensor(hass.Hass):
                               "preis": now, "normalpreis": reg,
                               "category": category, "parent_category": parent,
                               "liste_kategorie": list_cat})
+                v_from, v_until = validity(hit)          # saubere ISO-Daten, Freitext bleibt in validUntil
+                if v_from:
+                    entry["valid_from"] = v_from
+                if v_until:                              # kein Ende -> Feld weglassen
+                    entry["valid_until"] = v_until
                 treffer.append(entry)
 
         shown = [{k: v for k, v in p.items() if k not in ATTR_DROP}
