@@ -32,8 +32,10 @@ Optionale Argumente:
   plz / ort:            -> Standort fuer die ortsbasierte Suche. Ohne Angabe werden die Attribute
                            "plz" und "ort" des Sensors sensor.einkaufsliste_<chain> verwendet.
   zip_arg / city_arg:   -> Parameternamen im MCP-Aufruf (Standard "zip" und "city").
-  country:              -> Länderkürzel, das als Attribut "country" im Treffer-Sensor steht
-                           (Standard "CH").
+  country:              -> Länderkürzel (Standard "CH"): steht als Attribut "country" im
+                           Treffer-Sensor und wird an angebote_melden mitgesendet.
+  send_country: true    -> country an angebote_melden mitsenden. Lehnt der Service das Feld ab,
+                           wird ohne gesendet und send_country abgeschaltet.
 
 Voraussetzung: der MCP-Container ist per HTTP erreichbar (POST {"chains": ["denner"]}).
 """
@@ -454,7 +456,8 @@ class AktionenSensor(hass.Hass):
         self.source = self.args.get("source", self.chain)
         self.store_name = self.args.get("store_name", self.chain.capitalize())
         self.currency = self.args.get("currency", "CHF")
-        self.country = self.args.get("country", "CH")              # Länderkürzel im Treffer-Sensor
+        self.country = self.args.get("country", "CH")              # Länderkürzel (Sensor + Meldung)
+        self.send_country = bool(self.args.get("send_country", True))  # country mitsenden
         self.refresh_hours = float(self.args.get("refresh_hours", 6))
         self.max_items = int(self.args.get("max_items", 30))
         self.query = self.args.get("query")
@@ -971,6 +974,8 @@ class AktionenSensor(hass.Hass):
             if self.send_category:
                 offer["category"] = t.get("category")
                 offer["parent_category"] = t.get("parent_category")
+            if self.send_country:
+                offer["country"] = self.country
             if self.send_url and t.get("productUrl"):
                 offer[self.url_field] = t["productUrl"]
             offers.append({k: v for k, v in offer.items() if v not in (None, "")})
@@ -984,20 +989,31 @@ class AktionenSensor(hass.Hass):
         try:
             self._send_offers(offers)
         except Exception as exc:
-            stripped = self._strip_categories(offers)
-            if stripped == offers:                       # keine Kategorien im Spiel: echter Fehler
-                self._report_failed(exc, sig)
+            # Evtl. kennt der Service country und/oder category/parent_category nicht:
+            # erst ohne country, dann ohne Kategorien, zuletzt ohne beides.
+            c_keys, k_keys = ("country",), ("category", "parent_category")
+            attempts = ((c_keys, "send_country"), (k_keys, "send_category"),
+                        (c_keys + k_keys, None))
+            last_exc, done = exc, False
+            for keys, flag in attempts:
+                reduced = [{k: v for k, v in o.items() if k not in keys} for o in offers]
+                if reduced == offers:                    # Felder gar nicht im Spiel
+                    continue
+                try:
+                    self._send_offers(reduced)
+                except Exception as exc2:
+                    last_exc = exc2
+                    continue
+                for name in ((flag,) if flag else ("send_country", "send_category")):
+                    setattr(self, name, False)
+                offers, done = reduced, True
+                sig = json.dumps(offers, sort_keys=True, ensure_ascii=False)
+                self.log(f"{self.chain}: angebote_melden lehnt {', '.join(keys)} ab ({exc}) "
+                         f"- diese Felder werden nicht mehr mitgesendet.", level="WARNING")
+                break
+            if not done:
+                self._report_failed(last_exc, sig)
                 return
-            try:                                         # evtl. kennt der Service die Felder nicht
-                self._send_offers(stripped)
-            except Exception as exc2:
-                self._report_failed(exc2, sig)
-                return
-            self.send_category = False
-            offers = stripped
-            sig = json.dumps(offers, sort_keys=True, ensure_ascii=False)
-            self.log(f"{self.chain}: angebote_melden lehnt category/parent_category ab ({exc}) "
-                     f"- Kategorien werden nicht mehr mitgesendet.", level="WARNING")
         self._sent_sig, self._sent_at = sig, time.time()
         self.log(f"{len(offers)} Angebot(e) an die Einkaufsliste gemeldet")
 
