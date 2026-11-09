@@ -32,6 +32,8 @@ Optionale Argumente:
   plz / ort:            -> Standort fuer die ortsbasierte Suche. Ohne Angabe werden die Attribute
                            "plz" und "ort" des Sensors sensor.einkaufsliste_<chain> verwendet.
   zip_arg / city_arg:   -> Parameternamen im MCP-Aufruf (Standard "zip" und "city").
+  country:              -> Länderkürzel, das als Attribut "country" im Treffer-Sensor steht
+                           (Standard "CH").
 
 Voraussetzung: der MCP-Container ist per HTTP erreichbar (POST {"chains": ["denner"]}).
 """
@@ -452,6 +454,7 @@ class AktionenSensor(hass.Hass):
         self.source = self.args.get("source", self.chain)
         self.store_name = self.args.get("store_name", self.chain.capitalize())
         self.currency = self.args.get("currency", "CHF")
+        self.country = self.args.get("country", "CH")              # Länderkürzel im Treffer-Sensor
         self.refresh_hours = float(self.args.get("refresh_hours", 6))
         self.max_items = int(self.args.get("max_items", 30))
         self.query = self.args.get("query")
@@ -915,6 +918,7 @@ class AktionenSensor(hass.Hass):
         })
         self.set_state(self.match_entity, state=str(len(treffer)), attributes={
             "friendly_name": f"Einkaufsliste {self.chain.capitalize()} Treffer",
+            "country": self.country,
             "icon": "mdi:cart-percent",
             "unit_of_measurement": "Treffer",
             "artikel": [t["artikel"] for t in treffer],
